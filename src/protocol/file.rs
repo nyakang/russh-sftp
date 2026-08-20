@@ -5,7 +5,8 @@ use super::FileAttributes;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
-    pub filename: String,
+    #[serde(with = "serde_bytes")]
+    pub filename: Vec<u8>,
     pub longname: String,
     pub attrs: FileAttributes,
 }
@@ -14,7 +15,7 @@ impl File {
     /// Omits `longname` and set dummy `attributes`. This is mainly used for [`crate::server::Handler::realpath`] as per the standard
     pub fn dummy<S: Into<String>>(filename: S) -> Self {
         Self {
-            filename: filename.into(),
+            filename: filename.into().into_bytes(),
             longname: "".to_string(),
             attrs: FileAttributes::dummy(),
         }
@@ -23,7 +24,7 @@ impl File {
     /// Implies the use of longname
     pub fn new<S: Into<String>>(filename: S, attrs: FileAttributes) -> Self {
         let mut file = Self {
-            filename: filename.into(),
+            filename: filename.into().into_bytes(),
             longname: "".to_string(),
             attrs,
         };
@@ -54,7 +55,11 @@ impl File {
             } else {
                 self.attrs.gid.unwrap_or(0).to_string()
             },
-            self.filename
+            self.filename_string()
         )
+    }
+
+    pub fn filename_string(&self) -> String {
+        String::from_utf8_lossy(&self.filename).into_owned()
     }
 }

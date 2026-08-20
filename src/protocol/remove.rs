@@ -4,7 +4,8 @@ use super::{impl_packet_for, impl_request_id, Packet, RequestId};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Remove {
     pub id: u32,
-    pub filename: String,
+    #[serde(with = "serde_bytes")]
+    pub filename: Vec<u8>,
 }
 
 impl_request_id!(Remove);

@@ -54,7 +54,8 @@ impl From<OpenFlags> for fs::OpenOptions {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Open {
     pub id: u32,
-    pub filename: String,
+    #[serde(with = "serde_bytes")]
+    pub filename: Vec<u8>,
     pub pflags: OpenFlags,
     pub attrs: FileAttributes,
 }

@@ -30,6 +30,27 @@ macro_rules! into_wrap {
     };
 }
 
+macro_rules! into_wrap_path {
+    ($id:expr, $handler:expr, $method:ident; $($arg:expr),*) => {
+        match $handler.$method($($arg),*).await {
+            Err(err) => {
+                let StatusReply { status_code, error_message, language_tag } = err.into();
+                Packet::Status(Status {
+                    id: $id,
+                    status_code,
+                    error_message: error_message.unwrap_or_else(|| status_code.to_string()),
+                    language_tag: language_tag.unwrap_or_else(|| "en-US".to_string()),
+                })
+            },
+            Ok(packet) => packet.into(),
+        }
+    };
+}
+
+fn path_string(path: Vec<u8>) -> String {
+    String::from_utf8_lossy(&path).into_owned()
+}
+
 /// Configuration for the SFTP server.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -53,24 +74,74 @@ where
 
     match packet {
         Packet::Init(init) => into_wrap!(id, handler, init; version, extensions),
-        Packet::Open(open) => into_wrap!(id, handler, open; id, filename, pflags, attrs),
+        Packet::Open(open) => into_wrap_path!(
+            id,
+            handler,
+            open;
+            open.id,
+            path_string(open.filename),
+            open.pflags,
+            open.attrs
+        ),
         Packet::Close(close) => into_wrap!(id, handler, close; id, handle),
         Packet::Read(read) => into_wrap!(id, handler, read; id, handle, offset, len),
         Packet::Write(write) => into_wrap!(id, handler, write; id, handle, offset, data),
-        Packet::Lstat(lstat) => into_wrap!(id, handler, lstat; id, path),
+        Packet::Lstat(lstat) => {
+            into_wrap_path!(id, handler, lstat; lstat.id, path_string(lstat.path))
+        }
         Packet::Fstat(fstat) => into_wrap!(id, handler, fstat; id, handle),
-        Packet::SetStat(setstat) => into_wrap!(id, handler, setstat; id, path, attrs),
+        Packet::SetStat(setstat) => into_wrap_path!(
+            id,
+            handler,
+            setstat;
+            setstat.id,
+            path_string(setstat.path),
+            setstat.attrs
+        ),
         Packet::FSetStat(fsetstat) => into_wrap!(id, handler, fsetstat; id, handle, attrs),
-        Packet::OpenDir(opendir) => into_wrap!(id, handler, opendir; id, path),
+        Packet::OpenDir(opendir) => {
+            into_wrap_path!(id, handler, opendir; opendir.id, path_string(opendir.path))
+        }
         Packet::ReadDir(readdir) => into_wrap!(id, handler, readdir; id, handle),
-        Packet::Remove(remove) => into_wrap!(id, handler, remove; id, filename),
-        Packet::MkDir(mkdir) => into_wrap!(id, handler, mkdir; id, path, attrs),
-        Packet::RmDir(rmdir) => into_wrap!(id, handler, rmdir; id, path),
-        Packet::RealPath(realpath) => into_wrap!(id, handler, realpath; id, path),
-        Packet::Stat(stat) => into_wrap!(id, handler, stat; id, path),
-        Packet::Rename(rename) => into_wrap!(id, handler, rename; id, oldpath, newpath),
-        Packet::ReadLink(readlink) => into_wrap!(id, handler, readlink; id, path),
-        Packet::Symlink(symlink) => into_wrap!(id, handler, symlink; id, linkpath, targetpath),
+        Packet::Remove(remove) => {
+            into_wrap_path!(id, handler, remove; remove.id, path_string(remove.filename))
+        }
+        Packet::MkDir(mkdir) => into_wrap_path!(
+            id,
+            handler,
+            mkdir;
+            mkdir.id,
+            path_string(mkdir.path),
+            mkdir.attrs
+        ),
+        Packet::RmDir(rmdir) => {
+            into_wrap_path!(id, handler, rmdir; rmdir.id, path_string(rmdir.path))
+        }
+        Packet::RealPath(realpath) => {
+            into_wrap_path!(id, handler, realpath; realpath.id, path_string(realpath.path))
+        }
+        Packet::Stat(stat) => {
+            into_wrap_path!(id, handler, stat; stat.id, path_string(stat.path))
+        }
+        Packet::Rename(rename) => into_wrap_path!(
+            id,
+            handler,
+            rename;
+            rename.id,
+            path_string(rename.oldpath),
+            path_string(rename.newpath)
+        ),
+        Packet::ReadLink(readlink) => {
+            into_wrap_path!(id, handler, readlink; readlink.id, path_string(readlink.path))
+        }
+        Packet::Symlink(symlink) => into_wrap_path!(
+            id,
+            handler,
+            symlink;
+            symlink.id,
+            path_string(symlink.linkpath),
+            path_string(symlink.targetpath)
+        ),
         Packet::Extended(extended) => into_wrap!(id, handler, extended; id, request, data),
         _ => Packet::error(0, StatusCode::BadMessage),
     }

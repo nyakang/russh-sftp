@@ -4,7 +4,8 @@ use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetStat {
     pub id: u32,
-    pub path: String,
+    #[serde(with = "serde_bytes")]
+    pub path: Vec<u8>,
     pub attrs: FileAttributes,
 }
 

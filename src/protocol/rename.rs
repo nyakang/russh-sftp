@@ -4,8 +4,10 @@ use super::{impl_packet_for, impl_request_id, Packet, RequestId};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Rename {
     pub id: u32,
-    pub oldpath: String,
-    pub newpath: String,
+    #[serde(with = "serde_bytes")]
+    pub oldpath: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub newpath: Vec<u8>,
 }
 
 impl_request_id!(Rename);

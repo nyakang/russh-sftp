@@ -6,15 +6,19 @@ use crate::protocol::FileType;
 /// Entries returned by the [`ReadDir`] iterator.
 #[derive(Debug)]
 pub struct DirEntry {
-    parent: Arc<str>,
-    file: String,
+    parent: Arc<[u8]>,
+    file: Vec<u8>,
     metadata: Metadata,
 }
 
 impl DirEntry {
     /// Returns the file name for the file that this entry points at.
     pub fn file_name(&self) -> String {
-        self.file.to_owned()
+        String::from_utf8_lossy(&self.file).into_owned()
+    }
+
+    pub fn file_name_bytes(&self) -> &[u8] {
+        &self.file
     }
 
     /// Returns the file type for the file that this entry points at.
@@ -36,20 +40,29 @@ impl DirEntry {
     /// relative input yields a relative result — mirroring the behaviour of
     /// [`std::fs::DirEntry::path`].
     pub fn path(&self) -> String {
+        String::from_utf8_lossy(&self.path_bytes()).into_owned()
+    }
+
+    pub fn path_bytes(&self) -> Vec<u8> {
         if self.parent.is_empty() {
             self.file.clone()
-        } else if self.parent.ends_with('/') {
-            format!("{}{}", self.parent, self.file)
+        } else if self.parent.ends_with(b"/") {
+            let mut path = self.parent.to_vec();
+            path.extend_from_slice(&self.file);
+            path
         } else {
-            format!("{}/{}", self.parent, self.file)
+            let mut path = self.parent.to_vec();
+            path.push(b'/');
+            path.extend_from_slice(&self.file);
+            path
         }
     }
 }
 
 /// Iterator over the entries in a remote directory.
 pub struct ReadDir {
-    pub(crate) parent: Arc<str>,
-    pub(crate) entries: VecDeque<(String, Metadata)>,
+    pub(crate) parent: Arc<[u8]>,
+    pub(crate) entries: VecDeque<(Vec<u8>, Metadata)>,
 }
 
 impl Iterator for ReadDir {
@@ -58,7 +71,7 @@ impl Iterator for ReadDir {
     fn next(&mut self) -> Option<Self::Item> {
         match self.entries.pop_front() {
             None => None,
-            Some(entry) if entry.0 == "." || entry.0 == ".." => self.next(),
+            Some(entry) if entry.0 == b"." || entry.0 == b".." => self.next(),
             Some(entry) => Some(DirEntry {
                 parent: self.parent.clone(),
                 file: entry.0,
