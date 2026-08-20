@@ -1,15 +1,19 @@
 use bytes::Bytes;
 use dashmap::DashMap as HashMap;
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
     },
+    task::{Context, Poll},
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot},
+    time::Sleep,
 };
 
 use super::{error::Error, runtime, Handler};
@@ -52,10 +56,83 @@ impl SessionInner {
             return validate;
         }
 
-        Err(Error::UnexpectedBehavior(format!(
-            "Packet {:?} for unknown recipient",
-            id
-        )))
+        // A timed-out request may still receive a late response. It has already
+        // been cleaned up and must not terminate the whole SFTP handler loop.
+        warn!("Packet {:?} for unknown recipient", id);
+        Ok(())
+    }
+}
+
+pub(crate) struct PendingRequest {
+    id: Option<u32>,
+    requests: Arc<SharedRequests>,
+    receiver: oneshot::Receiver<SftpResult<Packet>>,
+    timeout: Pin<Box<Sleep>>,
+    completed: bool,
+}
+
+impl PendingRequest {
+    fn new(
+        id: Option<u32>,
+        receiver: oneshot::Receiver<SftpResult<Packet>>,
+        timeout: Duration,
+        requests: Arc<SharedRequests>,
+    ) -> Self {
+        Self {
+            id,
+            requests,
+            receiver,
+            timeout: Box::pin(tokio::time::sleep(timeout)),
+            completed: false,
+        }
+    }
+}
+
+impl Future for PendingRequest {
+    type Output = SftpResult<Packet>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match Pin::new(&mut self.receiver).poll(cx) {
+            Poll::Ready(Ok(result)) => {
+                self.completed = true;
+                return Poll::Ready(result);
+            }
+            Poll::Ready(Err(_)) => {
+                self.completed = true;
+                return Poll::Ready(Err(Error::UnexpectedBehavior("sender dropped".into())));
+            }
+            Poll::Pending => {}
+        }
+
+        match self.timeout.as_mut().poll(cx) {
+            Poll::Ready(()) => {
+                self.completed = true;
+                self.requests.remove(&self.id);
+                Poll::Ready(Err(Error::Timeout))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.requests.remove(&self.id);
+        }
+    }
+}
+
+fn fail_all_pending_requests(requests: &SharedRequests, error: Error) {
+    let ids = requests
+        .iter()
+        .map(|entry| *entry.key())
+        .collect::<Vec<_>>();
+
+    for id in ids {
+        if let Some((_, sender)) = requests.remove(&id) {
+            let _ = sender.send(Err(error.clone()));
+        }
     }
 }
 
@@ -163,8 +240,14 @@ impl RawSftpSession {
             version: None,
             requests: req_map.clone(),
         };
+        let fail_requests = req_map.clone();
+
         Self {
-            tx: run(stream, inner),
+            tx: run(
+                stream,
+                inner,
+                Arc::new(move |error| fail_all_pending_requests(&fail_requests, error)),
+            ),
             requests: req_map,
             next_req_id: AtomicU32::new(1),
             handles: AtomicU64::new(0),
@@ -184,11 +267,7 @@ impl RawSftpSession {
         self.limits = limits;
     }
 
-    fn send(
-        &self,
-        id: Option<u32>,
-        packet: Packet,
-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+    fn send(&self, id: Option<u32>, packet: Packet) -> SftpResult<PendingRequest> {
         if self.tx.is_closed() {
             return Err(Error::UnexpectedBehavior("session closed".into()));
         }
@@ -203,27 +282,37 @@ impl RawSftpSession {
 
         let (tx, rx) = oneshot::channel();
         self.requests.insert(id, tx);
-        self.tx.send(bytes)?;
+        if let Err(error) = self.tx.send(bytes) {
+            self.requests.remove(&id);
+            return Err(error.into());
+        }
 
-        Ok(rx)
+        Ok(PendingRequest::new(
+            id,
+            rx,
+            Duration::from_secs(self.timeout.load(Ordering::Relaxed)),
+            self.requests.clone(),
+        ))
     }
 
     async fn request(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
-        let rx = self.send(id, packet)?;
-        let timeout = self.timeout.load(Ordering::Relaxed);
-
-        match runtime::timeout(Duration::from_secs(timeout), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(Error::UnexpectedBehavior("sender dropped".into())),
-            Err(error) => {
-                self.requests.remove(&id);
-                Err(error)
-            }
-        }
+        self.send(id, packet)?.await
     }
 
     fn use_next_id(&self) -> u32 {
         self.next_req_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn release_handle(&self) {
+        if self
+            .handles
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .is_err()
+        {
+            warn!("attempt to release more SFTP handles than exist");
+        }
     }
 
     /// Closes the inner channel stream. Called by [`Drop`]
@@ -300,35 +389,20 @@ impl RawSftpSession {
                 }
                 .into(),
             )
-            .await?;
-
-        if let Packet::Status(status) = &result {
-            if status.status_code == StatusCode::Ok
-                && self
-                    .handles
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |h| {
-                        if h > 0 {
-                            Some(h - 1)
-                        } else {
-                            None
-                        }
-                    })
-                    .is_err()
-            {
-                warn!("attempt to close more handles than exist");
-            }
-        }
-
+            .await;
+        self.release_handle();
+        let result = result?;
         into_status!(result)
     }
 
-    /// Sends a close packet without awaiting the server's acknowledgement.
-    pub(crate) fn close_nowait(
-        &self,
-        handle: String,
-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
-        let id = self.use_next_id();
-        self.send(Some(id), Close { id, handle }.into())
+    /// Sends a close packet in the background while keeping the request tracked.
+    pub(crate) fn close_detached(self: &Arc<Self>, handle: String) {
+        let session = Arc::clone(self);
+        runtime::spawn(async move {
+            if let Err(error) = session.close(handle).await {
+                trace!("detached SFTP handle close failed: {error}");
+            }
+        });
     }
 
     pub async fn read<H: Into<String>>(
@@ -391,7 +465,7 @@ impl RawSftpSession {
         handle: String,
         offset: u64,
         data: Vec<u8>,
-    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+    ) -> SftpResult<PendingRequest> {
         if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
             return Err(Error::Limited("write limit reached".to_owned()));
         }

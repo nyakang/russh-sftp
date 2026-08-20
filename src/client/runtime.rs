@@ -64,6 +64,7 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Output, Error> {
     tokio::time::timeout(duration, future)
         .await
@@ -89,6 +90,7 @@ impl<F: Future> Future for SendWrapper<F> {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Output, Error> {
     let timer = SendWrapper(gloo_timers::future::TimeoutFuture::new(
         duration.as_millis() as u32,
