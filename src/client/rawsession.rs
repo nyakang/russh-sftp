@@ -171,7 +171,7 @@ impl Handler for SessionInner {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Limits {
     pub packet_len: Option<u64>,
     pub read_len: Option<u64>,
@@ -705,6 +705,36 @@ impl RawSftpSession {
                     id,
                     linkpath: path,
                     targetpath: target,
+                }
+                .into(),
+            )
+            .await?;
+
+        into_status!(result)
+    }
+
+    pub async fn symlink_openssh<T, L>(&self, target: T, link: L) -> SftpResult<Status>
+    where
+        T: Into<String>,
+        L: Into<String>,
+    {
+        self.symlink_openssh_bytes(target.into().into_bytes(), link.into().into_bytes())
+            .await
+    }
+
+    pub async fn symlink_openssh_bytes(
+        &self,
+        target: Vec<u8>,
+        link: Vec<u8>,
+    ) -> SftpResult<Status> {
+        let id = self.use_next_id();
+        let result = self
+            .request(
+                Some(id),
+                Symlink {
+                    id,
+                    linkpath: target,
+                    targetpath: link,
                 }
                 .into(),
             )

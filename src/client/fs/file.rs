@@ -98,6 +98,36 @@ impl File {
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
 
+    /// Reads data at `offset` without changing the sequential stream position.
+    ///
+    /// The returned buffer may be shorter than `len` at EOF or when constrained
+    /// by server packet/read limits.
+    pub async fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let max_read_len = self
+            .features
+            .limits
+            .and_then(|l| l.read_len)
+            .unwrap_or_else(|| {
+                self.features
+                    .max_packet_len
+                    .saturating_sub(READ_OVERHEAD_LENGTH) as u64
+            }) as usize;
+        let len = len.min(max_read_len);
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        match self
+            .session
+            .read(self.handle.clone(), offset, len as u32)
+            .await
+        {
+            Ok(data) => Ok(data.data),
+            Err(Error::Status(status)) if status.status_code == StatusCode::Eof => Ok(Vec::new()),
+            Err(e) => Err(io::Error::other(e.to_string())),
+        }
+    }
+
     /// Closes the file waiting for all pending writes and the close itself
     /// to be confirmed by the remote party.
     /// Equivalent to [`shutdown`](tokio::io::AsyncWriteExt::shutdown)
