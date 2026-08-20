@@ -404,3 +404,49 @@ impl AsyncWrite for File {
         poll
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{io, sync::Arc};
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::{Features, File, RawSftpSession};
+    use crate::client::Config;
+
+    fn test_features() -> Features {
+        Features {
+            hardlink: false,
+            fsync: false,
+            statvfs: false,
+            expand_path: false,
+            limits: None,
+            max_concurrent_writes: 8,
+            max_packet_len: 262_144,
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_times_out_when_write_ack_never_arrives() {
+        let (client, _server) = tokio::io::duplex(4096);
+        let session = Arc::new(RawSftpSession::new_with_config(
+            client,
+            Config {
+                request_timeout_secs: 0,
+                ..Config::default()
+            },
+        ));
+        let mut file = File::new(session, "handle".to_string(), test_features());
+
+        file.write_all(b"payload")
+            .await
+            .expect("write should queue without waiting for acknowledgement");
+        let error = file
+            .shutdown()
+            .await
+            .expect_err("shutdown should time out while draining the write acknowledgement");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), "SFTP write acknowledgement timed out");
+    }
+}
