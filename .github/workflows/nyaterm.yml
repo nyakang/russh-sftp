@@ -1,0 +1,38 @@
+name: NyaTerm branch
+
+# Upstream's ci.yml only triggers on `master`, so nothing ran on this branch.
+# The request and handle lifetime work here is what keeps uploads from stalling
+# and server handles from leaking, and it is all covered by the library tests.
+#
+# Triggers on this branch only, and lives in its own file rather than editing
+# upstream's workflow, so rebasing the patch series onto a newer upstream never
+# conflicts over CI configuration.
+
+on:
+  push:
+    branches: ["nyaterm"]
+  pull_request:
+    branches: ["nyaterm"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Library tests
+        run: cargo test --lib
+
+      - name: Check all targets
+        run: cargo check --all-targets
