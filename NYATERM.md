@@ -50,3 +50,12 @@ address remote paths that are not valid UTF-8.
 cargo test --lib          # 12 passed
 cargo check --all-targets
 ```
+
+
+## Atomic replacement API (UI/UX migration)
+
+Add `SftpSession::posix_rename_bytes`, gated on the advertised OpenSSH extension.
+This lets NyaTerm replace a symlink without unlinking the existing path first.
+Unsupported servers fail without mutation. Payload tests cover byte paths/order;
+an unsupported-session regression checks failure without a protocol request.
+Validation: Windows, `cargo test --lib`, `cargo fmt --all -- --check`.

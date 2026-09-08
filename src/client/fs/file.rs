@@ -416,6 +416,7 @@ mod tests {
 
     fn test_features() -> Features {
         Features {
+            posix_rename: false,
             hardlink: false,
             fsync: false,
             statvfs: false,

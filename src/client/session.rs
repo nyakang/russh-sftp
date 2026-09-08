@@ -15,6 +15,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Features {
+    pub posix_rename: bool,
     pub hardlink: bool,
     pub fsync: bool,
     pub statvfs: bool,
@@ -53,6 +54,7 @@ impl SftpSession {
         let has_extension = |name, ver| version.extensions.get(name).is_some_and(|v| v == ver);
 
         let mut features = Features {
+            posix_rename: has_extension("posix-rename@openssh.com", "1"),
             hardlink: has_extension(extensions::HARDLINK, "1"),
             fsync: has_extension(extensions::FSYNC, "1"),
             statvfs: has_extension(extensions::STATVFS, "2"),
@@ -347,6 +349,28 @@ impl SftpSession {
             .map(|_| ())
     }
 
+    /// Atomically replace a destination using the OpenSSH POSIX rename extension.
+    /// Unsupported servers fail without deleting or modifying either path.
+    pub async fn posix_rename_bytes(&self, oldpath: Vec<u8>, newpath: Vec<u8>) -> SftpResult<()> {
+        if !self.features.posix_rename {
+            return Err(Error::UnexpectedBehavior(
+                "server does not support atomic POSIX rename".into(),
+            ));
+        }
+        let data = posix_rename_payload(&oldpath, &newpath)?;
+        match self
+            .session
+            .extended("posix-rename@openssh.com", data)
+            .await?
+        {
+            crate::protocol::Packet::Status(status) if status.status_code == StatusCode::Ok => {
+                Ok(())
+            }
+            crate::protocol::Packet::Status(status) => Err(status.into()),
+            _ => Err(Error::UnexpectedPacket),
+        }
+    }
+
     /// Creates a symlink of the specified target.
     pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<()>
     where
@@ -484,6 +508,17 @@ impl SftpSession {
     }
 }
 
+fn posix_rename_payload(oldpath: &[u8], newpath: &[u8]) -> SftpResult<Vec<u8>> {
+    let mut data = Vec::new();
+    for path in [oldpath, newpath] {
+        let length = u32::try_from(path.len())
+            .map_err(|_| Error::Limited("path exceeds SFTP string length".into()))?;
+        data.extend_from_slice(&length.to_be_bytes());
+        data.extend_from_slice(path);
+    }
+    Ok(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +529,7 @@ mod tests {
             Self {
                 session: Arc::new(RawSftpSession::new(stream)),
                 features: Features {
+                    posix_rename: false,
                     hardlink: false,
                     fsync: false,
                     statvfs: false,
@@ -504,6 +540,25 @@ mod tests {
                 },
             }
         }
+    }
+
+    #[test]
+    fn posix_rename_payload_preserves_non_utf8_and_argument_order() {
+        assert_eq!(
+            posix_rename_payload(b"old-\xff", b"new").unwrap(),
+            b"\0\0\0\x05old-\xff\0\0\0\x03new"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_posix_rename_fails_without_sending_a_request() {
+        let session = SftpSession::for_test_with_limits(None, 262_144);
+        assert!(matches!(
+            session
+                .posix_rename_bytes(b"old".to_vec(), b"new".to_vec())
+                .await,
+            Err(Error::UnexpectedBehavior(_))
+        ));
     }
 
     #[tokio::test]
