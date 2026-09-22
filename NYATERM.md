@@ -5,8 +5,8 @@ to `russh-sftp` on top of an unmodified upstream base.
 
 - Fork: <https://github.com/nyakang/russh-sftp>
 - Upstream: <https://github.com/AspectUnk/russh-sftp>
-- Base revision: `e145c1f7ece99f41f558949ef59731f2cd1a9dfe` (`russh-sftp` 2.4.0,
-  also upstream `master` head at the time of this branch)
+- Base revision: `c2776c64c27e554dda0e0304925f890833fea5b1`
+  (`russh-sftp` 3.0.0, upstream `master` on 2026-09-22)
 - Branch: `nyaterm`
 
 These changes prevent stalled writes and leaked server handles during uploads,
@@ -47,9 +47,17 @@ address remote paths that are not valid UTF-8.
 ## Validation
 
 ```sh
-cargo test --lib          # 12 passed
+cargo test --lib          # 16 passed
 cargo check --all-targets
 ```
+
+The 2026-09-22 merge to `c2776c64c2` conflicted in the client request,
+file-I/O, runtime, and high-level session layers. The resolution adopts
+upstream 3.0's `Request` future, creation-time deadlines, borrowed write
+encoding, and pipelined reads/writes. It retains raw-byte path APIs, OpenSSH
+symlink ordering, server-limit accessors, POSIX rename, explicit transport
+failure wakeups, tracked detached close, release-on-all-outcomes handle
+accounting, idempotent shutdown, and `TimedOut` I/O classification.
 
 
 ## Atomic replacement API (UI/UX migration)

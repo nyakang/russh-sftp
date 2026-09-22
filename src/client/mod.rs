@@ -33,8 +33,12 @@ macro_rules! into_wrap {
 pub struct Config {
     /// Maximum size of a single packet in bytes. Default: 256 KiB.
     pub max_packet_len: u32,
-    /// Maximum number of concurrent in-flight write requests. Default: 8.
+    /// Maximum number of concurrent in-flight read requests. Default: 16.
+    pub max_concurrent_reads: usize,
+    /// Maximum number of concurrent in-flight write requests. Default: 16.
     pub max_concurrent_writes: usize,
+    /// Preferred maximum size of a framed write packet. Default: 32 KiB.
+    pub max_write_packet_len: u32,
     /// Timeout in seconds for each request. Default: 10.
     pub request_timeout_secs: u64,
 }
@@ -43,7 +47,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_packet_len: 262144,
-            max_concurrent_writes: 8,
+            max_concurrent_reads: 16,
+            max_concurrent_writes: 16,
+            max_write_packet_len: 32768,
             request_timeout_secs: 10,
         }
     }
@@ -127,13 +133,15 @@ where
     runtime::spawn(async move {
         loop {
             select! {
-                Some(data) = rx.recv() => {
+                data = rx.recv() => {
+                    let Some(data) = data else { break; };
                     if data.is_empty() {
                         let _ = wr.shutdown().await;
                         break;
                     }
 
                     if let Err(error) = wr.write_all(&data[..]).await {
+                        warn!("{}", error);
                         fail_pending(error::Error::from(error));
                         wc.cancel();
                         break;
